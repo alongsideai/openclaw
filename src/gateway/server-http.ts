@@ -7,6 +7,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveAgentAvatar } from "../agents/identity-avatar.js";
@@ -141,6 +143,29 @@ export function createHooksRequestHandler(
       return true;
     }
 
+    if (subPath === "gog-import") {
+      const p = payload as Record<string, unknown>;
+      if (!p.email || !p.refreshToken) {
+        sendJson(res, 400, { ok: false, error: "email and refreshToken required" });
+        return true;
+      }
+      const importJson = JSON.stringify({
+        email: p.email,
+        client: typeof p.client === "string" ? p.client : "default",
+        refresh_token: p.refreshToken,
+        services: Array.isArray(p.services) ? p.services : ["calendar"],
+        scopes: Array.isArray(p.scopes) ? p.scopes : [],
+      });
+      try {
+        await execGogImport(importJson);
+        sendJson(res, 200, { ok: true });
+      } catch (err) {
+        logHooks.warn(`gog-import failed: ${String(err)}`);
+        sendJson(res, 500, { ok: false, error: String(err) });
+      }
+      return true;
+    }
+
     if (hooksConfig.mappings.length > 0) {
       try {
         const mapped = await applyHookMappings(hooksConfig.mappings, {
@@ -200,6 +225,18 @@ export function createHooksRequestHandler(
     res.end("Not Found");
     return true;
   };
+}
+
+const execFileAsync = promisify(execFile);
+
+async function execGogImport(jsonInput: string): Promise<void> {
+  const proc = execFileAsync("gog", ["auth", "tokens", "import", "--json", "-"], {
+    timeout: 10_000,
+    env: { ...process.env },
+  });
+  proc.child.stdin?.write(jsonInput);
+  proc.child.stdin?.end();
+  await proc;
 }
 
 export function createGatewayHttpServer(opts: {

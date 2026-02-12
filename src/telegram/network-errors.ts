@@ -38,6 +38,7 @@ const RECOVERABLE_MESSAGE_SNIPPETS = [
   "getaddrinfo",
   "timeout", // catch timeout messages not covered by error codes/names
   "timed out", // grammY getUpdates returns "timed out after X seconds" (not matched by "timeout")
+  "bad gateway", // proxy returned non-JSON 502; retry instead of crashing
 ];
 
 function normalizeCode(code?: string): string {
