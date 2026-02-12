@@ -1,20 +1,18 @@
 import type { PairingChannel } from "./pairing-store.js";
-import { formatCliCommand } from "../cli/command-format.js";
 
 export function buildPairingReply(params: {
   channel: PairingChannel;
   idLine: string;
   code: string;
 }): string {
-  const { channel, idLine, code } = params;
+  const { code } = params;
   return [
-    "OpenClaw: access not configured.",
+    "Hi! This bot requires access approval.",
     "",
-    idLine,
+    `Your pairing code is: ${code}`,
     "",
-    `Pairing code: ${code}`,
+    "Your request has been sent to the bot owner. You'll be able to chat once they approve it.",
     "",
-    "Ask the bot owner to approve with:",
-    formatCliCommand(`openclaw pairing approve ${channel} <code>`),
+    "{{TODO}}/dashboard/telegram",
   ].join("\n");
 }
