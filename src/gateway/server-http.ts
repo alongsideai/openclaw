@@ -61,6 +61,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+function sendText(res: ServerResponse, status: number, text: string) {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end(text);
+}
+
 export type HooksRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
 export function createHooksRequestHandler(
@@ -85,9 +91,7 @@ export function createHooksRequestHandler(
 
     const { token, fromQuery } = extractHookToken(req, url);
     if (!token || token !== hooksConfig.token) {
-      res.statusCode = 401;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Unauthorized");
+      sendText(res, 401, "Unauthorized");
       return true;
     }
     if (fromQuery) {
@@ -99,18 +103,14 @@ export function createHooksRequestHandler(
     }
 
     if (req.method !== "POST") {
-      res.statusCode = 405;
       res.setHeader("Allow", "POST");
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Method Not Allowed");
+      sendText(res, 405, "Method Not Allowed");
       return true;
     }
 
     const subPath = url.pathname.slice(basePath.length).replace(/^\/+/, "");
     if (!subPath) {
-      res.statusCode = 404;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Not Found");
+      sendText(res, 404, "Not Found");
       return true;
     }
 
@@ -170,63 +170,65 @@ export function createHooksRequestHandler(
       return true;
     }
 
-    if (hooksConfig.mappings.length > 0) {
-      try {
-        const mapped = await applyHookMappings(hooksConfig.mappings, {
-          payload: payload as Record<string, unknown>,
-          headers,
-          url,
-          path: subPath,
-        });
-        if (mapped) {
-          if (!mapped.ok) {
-            sendJson(res, 400, { ok: false, error: mapped.error });
-            return true;
-          }
-          if (mapped.action === null) {
-            res.statusCode = 204;
-            res.end();
-            return true;
-          }
-          if (mapped.action.kind === "wake") {
-            dispatchWakeHook({
-              text: mapped.action.text,
-              mode: mapped.action.mode,
-            });
-            sendJson(res, 200, { ok: true, mode: mapped.action.mode });
-            return true;
-          }
-          const channel = resolveHookChannel(mapped.action.channel);
-          if (!channel) {
-            sendJson(res, 400, { ok: false, error: getHookChannelError() });
-            return true;
-          }
-          const runId = dispatchAgentHook({
-            message: mapped.action.message,
-            name: mapped.action.name ?? "Hook",
-            wakeMode: mapped.action.wakeMode,
-            sessionKey: mapped.action.sessionKey ?? "",
-            deliver: resolveHookDeliver(mapped.action.deliver),
-            channel,
-            to: mapped.action.to,
-            model: mapped.action.model,
-            thinking: mapped.action.thinking,
-            timeoutSeconds: mapped.action.timeoutSeconds,
-            allowUnsafeExternalContent: mapped.action.allowUnsafeExternalContent,
-          });
-          sendJson(res, 202, { ok: true, runId });
-          return true;
-        }
-      } catch (err) {
-        logHooks.warn(`hook mapping failed: ${String(err)}`);
-        sendJson(res, 500, { ok: false, error: "hook mapping failed" });
-        return true;
-      }
+    if (hooksConfig.mappings.length === 0) {
+      sendText(res, 404, "Not Found");
+      return true;
     }
 
-    res.statusCode = 404;
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.end("Not Found");
+    let mapped;
+    try {
+      mapped = await applyHookMappings(hooksConfig.mappings, {
+        payload: payload as Record<string, unknown>,
+        headers,
+        url,
+        path: subPath,
+      });
+    } catch (err) {
+      logHooks.warn(`hook mapping failed: ${String(err)}`);
+      sendJson(res, 500, { ok: false, error: "hook mapping failed" });
+      return true;
+    }
+
+    if (!mapped) {
+      sendText(res, 404, "Not Found");
+      return true;
+    }
+    if (!mapped.ok) {
+      sendJson(res, 400, { ok: false, error: mapped.error });
+      return true;
+    }
+    if (mapped.action === null) {
+      res.statusCode = 204;
+      res.end();
+      return true;
+    }
+    if (mapped.action.kind === "wake") {
+      dispatchWakeHook({
+        text: mapped.action.text,
+        mode: mapped.action.mode,
+      });
+      sendJson(res, 200, { ok: true, mode: mapped.action.mode });
+      return true;
+    }
+    const channel = resolveHookChannel(mapped.action.channel);
+    if (!channel) {
+      sendJson(res, 400, { ok: false, error: getHookChannelError() });
+      return true;
+    }
+    const runId = dispatchAgentHook({
+      message: mapped.action.message,
+      name: mapped.action.name ?? "Hook",
+      wakeMode: mapped.action.wakeMode,
+      sessionKey: mapped.action.sessionKey ?? "",
+      deliver: resolveHookDeliver(mapped.action.deliver),
+      channel,
+      to: mapped.action.to,
+      model: mapped.action.model,
+      thinking: mapped.action.thinking,
+      timeoutSeconds: mapped.action.timeoutSeconds,
+      allowUnsafeExternalContent: mapped.action.allowUnsafeExternalContent,
+    });
+    sendJson(res, 202, { ok: true, runId });
     return true;
   };
 }
@@ -236,7 +238,6 @@ const execFileAsync = promisify(execFile);
 async function execGogImport(jsonInput: string): Promise<void> {
   const proc = execFileAsync("gog", ["auth", "tokens", "import", "--json", "-"], {
     timeout: 10_000,
-    env: { ...process.env },
   });
   proc.child.stdin?.write(jsonInput);
   proc.child.stdin?.end();
@@ -253,21 +254,11 @@ async function updateToolsWithGogAuth(
 
   try {
     await fs.mkdir(workspaceDir, { recursive: true });
-    let content = "";
-    try {
-      content = await fs.readFile(toolsPath, "utf-8");
-    } catch {
-      // File doesn't exist yet — will be seeded with just the gog section
-    }
+    const existing = await fs.readFile(toolsPath, "utf-8").catch(() => "");
 
-    if (content.includes("## Google (gog)")) {
-      content = content.replace(
-        /\n## Google \(gog\)\n[\s\S]*?(?=\n## |\n---|\s*$)/,
-        gogSection,
-      );
-    } else {
-      content = content.trimEnd() + gogSection;
-    }
+    const content = existing.includes("## Google (gog)")
+      ? existing.replace(/\n## Google \(gog\)\n[\s\S]*?(?=\n## |\n---|\s*$)/, gogSection)
+      : existing.trimEnd() + gogSection;
 
     await fs.writeFile(toolsPath, content);
     log.info(`Updated TOOLS.md with gog auth for ${email}`);
@@ -333,61 +324,53 @@ export function createGatewayHttpServer(opts: {
       if (handlePluginRequest && (await handlePluginRequest(req, res))) {
         return;
       }
-      if (openResponsesEnabled) {
-        if (
-          await handleOpenResponsesHttpRequest(req, res, {
-            auth: resolvedAuth,
-            config: openResponsesConfig,
-            trustedProxies,
-          })
-        ) {
-          return;
-        }
+      if (
+        openResponsesEnabled &&
+        (await handleOpenResponsesHttpRequest(req, res, {
+          auth: resolvedAuth,
+          config: openResponsesConfig,
+          trustedProxies,
+        }))
+      ) {
+        return;
       }
-      if (openAiChatCompletionsEnabled) {
-        if (
-          await handleOpenAiHttpRequest(req, res, {
-            auth: resolvedAuth,
-            trustedProxies,
-          })
-        ) {
-          return;
-        }
+      if (
+        openAiChatCompletionsEnabled &&
+        (await handleOpenAiHttpRequest(req, res, {
+          auth: resolvedAuth,
+          trustedProxies,
+        }))
+      ) {
+        return;
       }
-      if (canvasHost) {
-        if (await handleA2uiHttpRequest(req, res)) {
-          return;
-        }
-        if (await canvasHost.handleHttpRequest(req, res)) {
-          return;
-        }
+      if (canvasHost && (await handleA2uiHttpRequest(req, res))) {
+        return;
       }
-      if (controlUiEnabled) {
-        if (
-          handleControlUiAvatarRequest(req, res, {
-            basePath: controlUiBasePath,
-            resolveAvatar: (agentId) => resolveAgentAvatar(configSnapshot, agentId),
-          })
-        ) {
-          return;
-        }
-        if (
-          handleControlUiHttpRequest(req, res, {
-            basePath: controlUiBasePath,
-            config: configSnapshot,
-          })
-        ) {
-          return;
-        }
+      if (canvasHost && (await canvasHost.handleHttpRequest(req, res))) {
+        return;
+      }
+      if (
+        controlUiEnabled &&
+        handleControlUiAvatarRequest(req, res, {
+          basePath: controlUiBasePath,
+          resolveAvatar: (agentId) => resolveAgentAvatar(configSnapshot, agentId),
+        })
+      ) {
+        return;
+      }
+      if (
+        controlUiEnabled &&
+        handleControlUiHttpRequest(req, res, {
+          basePath: controlUiBasePath,
+          config: configSnapshot,
+        })
+      ) {
+        return;
       }
 
-      res.statusCode = 404;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Not Found");
+      sendText(res, 404, "Not Found");
     } catch {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Internal Server Error");
+      sendText(res, 500, "Internal Server Error");
     }
   }
 
