@@ -8,6 +8,8 @@ import {
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
@@ -16,6 +18,7 @@ import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import { loadConfig } from "../config/config.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
 import { handleControlUiAvatarRequest, handleControlUiHttpRequest } from "./control-ui.js";
+import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -158,6 +161,7 @@ export function createHooksRequestHandler(
       });
       try {
         await execGogImport(importJson);
+        await updateToolsWithGogAuth(String(p.email), logHooks);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         logHooks.warn(`gog-import failed: ${String(err)}`);
@@ -237,6 +241,39 @@ async function execGogImport(jsonInput: string): Promise<void> {
   proc.child.stdin?.write(jsonInput);
   proc.child.stdin?.end();
   await proc;
+}
+
+async function updateToolsWithGogAuth(
+  email: string,
+  log: SubsystemLogger,
+): Promise<void> {
+  const workspaceDir = resolveDefaultAgentWorkspaceDir();
+  const toolsPath = path.join(workspaceDir, "TOOLS.md");
+  const gogSection = `\n## Google (gog)\n\ngog is installed and pre-authenticated as ${email}. No setup needed — use gog commands directly.\n`;
+
+  try {
+    await fs.mkdir(workspaceDir, { recursive: true });
+    let content = "";
+    try {
+      content = await fs.readFile(toolsPath, "utf-8");
+    } catch {
+      // File doesn't exist yet — will be seeded with just the gog section
+    }
+
+    if (content.includes("## Google (gog)")) {
+      content = content.replace(
+        /\n## Google \(gog\)\n[\s\S]*?(?=\n## |\n---|\s*$)/,
+        gogSection,
+      );
+    } else {
+      content = content.trimEnd() + gogSection;
+    }
+
+    await fs.writeFile(toolsPath, content);
+    log.info(`Updated TOOLS.md with gog auth for ${email}`);
+  } catch (err) {
+    log.warn(`Failed to update TOOLS.md: ${String(err)}`);
+  }
 }
 
 export function createGatewayHttpServer(opts: {
