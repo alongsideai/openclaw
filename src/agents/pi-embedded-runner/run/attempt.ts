@@ -58,6 +58,7 @@ import {
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
+import { createTraceHeaderStreamFn } from "../trace-header.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isAbortError } from "../abort.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
@@ -521,6 +522,13 @@ export async function runEmbeddedAttempt(
         params.provider,
         params.modelId,
         params.streamParams,
+      );
+
+      // Inject trace header for transparent proxy telemetry correlation.
+      activeSession.agent.streamFn = createTraceHeaderStreamFn(
+        activeSession.agent.streamFn,
+        params.sessionKey ?? params.sessionId,
+        params.runId,
       );
 
       if (cacheTrace) {
