@@ -7,6 +7,7 @@ export type MemoryConfig = {
     provider: "openai";
     model?: string;
     apiKey: string;
+    baseUrl?: string;
   };
   dbPath?: string;
   autoCapture?: boolean;
@@ -95,15 +96,18 @@ export const memoryConfigSchema = {
     if (!embedding || typeof embedding.apiKey !== "string") {
       throw new Error("embedding.apiKey is required");
     }
-    assertAllowedKeys(embedding, ["apiKey", "model"], "embedding config");
+    assertAllowedKeys(embedding, ["apiKey", "model", "baseUrl"], "embedding config");
 
     const model = resolveEmbeddingModel(embedding);
+
+    const baseUrl = typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined;
 
     return {
       embedding: {
         provider: "openai",
         model,
         apiKey: resolveEnvVars(embedding.apiKey),
+        baseUrl,
       },
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
       autoCapture: cfg.autoCapture !== false,

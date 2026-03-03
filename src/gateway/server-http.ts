@@ -17,8 +17,13 @@ import { resolveAgentAvatar } from "../agents/identity-avatar.js";
 import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import { loadConfig } from "../config/config.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
-import { handleControlUiAvatarRequest, handleControlUiHttpRequest } from "./control-ui.js";
+import {
+  handleControlUiAvatarRequest,
+  handleControlUiHttpRequest,
+  type ControlUiRootState,
+} from "./control-ui.js";
 import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace.js";
+import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -162,6 +167,7 @@ export function createHooksRequestHandler(
       try {
         await execGogImport(importJson);
         await updateToolsWithGogAuth(String(p.email), logHooks);
+        await clearStaleSessions(logHooks);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         logHooks.warn(`gog-import failed: ${String(err)}`);
@@ -267,10 +273,26 @@ async function updateToolsWithGogAuth(
   }
 }
 
+async function clearStaleSessions(log: SubsystemLogger): Promise<void> {
+  const sessionsDir = resolveSessionTranscriptsDirForAgent("main");
+  try {
+    const entries = await fs.readdir(sessionsDir);
+    const jsonlFiles = entries.filter((e: string) => e.endsWith(".jsonl"));
+    if (jsonlFiles.length === 0) return;
+    await Promise.all(jsonlFiles.map((f: string) => fs.unlink(path.join(sessionsDir, f))));
+    log.info(`Cleared ${jsonlFiles.length} stale session file(s) after gog-import`);
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === "ENOENT") return;
+    log.warn(`Failed to clear stale sessions: ${String(err)}`);
+  }
+}
+
 export function createGatewayHttpServer(opts: {
   canvasHost: CanvasHostHandler | null;
   controlUiEnabled: boolean;
   controlUiBasePath: string;
+  controlUiRoot?: ControlUiRootState;
   openAiChatCompletionsEnabled: boolean;
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
@@ -283,6 +305,7 @@ export function createGatewayHttpServer(opts: {
     canvasHost,
     controlUiEnabled,
     controlUiBasePath,
+    controlUiRoot,
     openAiChatCompletionsEnabled,
     openResponsesEnabled,
     openResponsesConfig,
@@ -346,26 +369,24 @@ export function createGatewayHttpServer(opts: {
       if (canvasHost && (await handleA2uiHttpRequest(req, res))) {
         return;
       }
-      if (canvasHost && (await canvasHost.handleHttpRequest(req, res))) {
-        return;
-      }
-      if (
-        controlUiEnabled &&
-        handleControlUiAvatarRequest(req, res, {
-          basePath: controlUiBasePath,
-          resolveAvatar: (agentId) => resolveAgentAvatar(configSnapshot, agentId),
-        })
-      ) {
-        return;
-      }
-      if (
-        controlUiEnabled &&
-        handleControlUiHttpRequest(req, res, {
-          basePath: controlUiBasePath,
-          config: configSnapshot,
-        })
-      ) {
-        return;
+      if (controlUiEnabled) {
+        if (
+          handleControlUiAvatarRequest(req, res, {
+            basePath: controlUiBasePath,
+            resolveAvatar: (agentId) => resolveAgentAvatar(configSnapshot, agentId),
+          })
+        ) {
+          return;
+        }
+        if (
+          handleControlUiHttpRequest(req, res, {
+            basePath: controlUiBasePath,
+            config: configSnapshot,
+            root: controlUiRoot,
+          })
+        ) {
+          return;
+        }
       }
 
       sendText(res, 404, "Not Found");
