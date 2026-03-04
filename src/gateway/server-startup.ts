@@ -17,6 +17,7 @@ import {
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
+import { setupGogOnStartup } from "./gog-setup.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import {
   scheduleRestartSentinelWake,
@@ -44,6 +45,13 @@ export async function startGatewaySidecars(params: {
     browserControl = await startBrowserControlServerIfEnabled();
   } catch (err) {
     params.logBrowser.error(`server failed to start: ${String(err)}`);
+  }
+
+  // Restore gog credentials from DynamoDB on startup (idempotent).
+  try {
+    await setupGogOnStartup(params.logHooks);
+  } catch (err) {
+    params.logHooks.warn(`gog startup setup failed: ${String(err)}`);
   }
 
   // Start Gmail watcher if configured (hooks.gmail.account).

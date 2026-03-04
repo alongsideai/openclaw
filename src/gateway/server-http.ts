@@ -1,5 +1,7 @@
 import type { TlsOptions } from "node:tls";
 import type { WebSocketServer } from "ws";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -7,23 +9,21 @@ import {
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveAgentAvatar } from "../agents/identity-avatar.js";
+import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace.js";
 import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import { loadConfig } from "../config/config.js";
+import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
 import {
   handleControlUiAvatarRequest,
   handleControlUiHttpRequest,
   type ControlUiRootState,
 } from "./control-ui.js";
-import { resolveDefaultAgentWorkspaceDir } from "../agents/workspace.js";
-import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -42,6 +42,8 @@ import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
+
+export type GogLogger = Pick<SubsystemLogger, "info" | "warn">;
 
 type HookDispatchers = {
   dispatchWakeHook: (value: { text: string; mode: "now" | "next-heartbeat" }) => void;
@@ -176,6 +178,25 @@ export function createHooksRequestHandler(
       return true;
     }
 
+    if (subPath === "gog-disconnect") {
+      const p = payload as Record<string, unknown>;
+      const email = typeof p.email === "string" ? p.email : "";
+      try {
+        if (email) {
+          await execFileAsync("gog", ["auth", "remove", email, "--force", "--no-input"], {
+            timeout: 10_000,
+          });
+        }
+        await removeGogFromTools(logHooks);
+        await clearStaleSessions(logHooks);
+        sendJson(res, 200, { ok: true });
+      } catch (err) {
+        logHooks.warn(`gog-disconnect failed: ${String(err)}`);
+        sendJson(res, 500, { ok: false, error: String(err) });
+      }
+      return true;
+    }
+
     if (hooksConfig.mappings.length === 0) {
       sendText(res, 404, "Not Found");
       return true;
@@ -241,7 +262,7 @@ export function createHooksRequestHandler(
 
 const execFileAsync = promisify(execFile);
 
-async function execGogImport(jsonInput: string): Promise<void> {
+export async function execGogImport(jsonInput: string): Promise<void> {
   const proc = execFileAsync("gog", ["auth", "tokens", "import", "--json", "-"], {
     timeout: 10_000,
   });
@@ -250,10 +271,7 @@ async function execGogImport(jsonInput: string): Promise<void> {
   await proc;
 }
 
-async function updateToolsWithGogAuth(
-  email: string,
-  log: SubsystemLogger,
-): Promise<void> {
+export async function updateToolsWithGogAuth(email: string, log: GogLogger): Promise<void> {
   const workspaceDir = resolveDefaultAgentWorkspaceDir();
   const toolsPath = path.join(workspaceDir, "TOOLS.md");
   const gogSection = `\n## Google (gog)\n\ngog is installed and pre-authenticated as ${email}. No setup needed — use gog commands directly.\n`;
@@ -273,7 +291,7 @@ async function updateToolsWithGogAuth(
   }
 }
 
-async function clearStaleSessions(log: SubsystemLogger): Promise<void> {
+export async function clearStaleSessions(log: GogLogger): Promise<void> {
   const sessionsDir = resolveSessionTranscriptsDirForAgent("main");
   try {
     const entries = await fs.readdir(sessionsDir);
@@ -285,6 +303,20 @@ async function clearStaleSessions(log: SubsystemLogger): Promise<void> {
     const code = (err as { code?: string }).code;
     if (code === "ENOENT") return;
     log.warn(`Failed to clear stale sessions: ${String(err)}`);
+  }
+}
+
+export async function removeGogFromTools(log: GogLogger): Promise<void> {
+  const workspaceDir = resolveDefaultAgentWorkspaceDir();
+  const toolsPath = path.join(workspaceDir, "TOOLS.md");
+  try {
+    const existing = await fs.readFile(toolsPath, "utf-8").catch(() => "");
+    if (!existing.includes("## Google (gog)")) return;
+    const content = existing.replace(/\n## Google \(gog\)\n[\s\S]*?(?=\n## |\n---|\s*$)/, "");
+    await fs.writeFile(toolsPath, content);
+    log.info("Removed gog section from TOOLS.md");
+  } catch (err) {
+    log.warn(`Failed to remove gog from TOOLS.md: ${String(err)}`);
   }
 }
 
