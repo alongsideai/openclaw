@@ -67,7 +67,10 @@ export async function setupGogOnStartup(log: GogLogger): Promise<void> {
       ?.trim();
     if (email) {
       log.info(`gog already authenticated as ${email}`);
-      await updateToolsWithGogAuth(email, log);
+      const changed = await updateToolsWithGogAuth(email, log);
+      if (changed) {
+        await clearStaleSessions(log);
+      }
       return;
     }
   } catch {

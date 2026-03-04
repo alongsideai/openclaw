@@ -271,10 +271,21 @@ export async function execGogImport(jsonInput: string): Promise<void> {
   await proc;
 }
 
-export async function updateToolsWithGogAuth(email: string, log: GogLogger): Promise<void> {
+export async function updateToolsWithGogAuth(email: string, log: GogLogger): Promise<boolean> {
   const workspaceDir = resolveDefaultAgentWorkspaceDir();
   const toolsPath = path.join(workspaceDir, "TOOLS.md");
-  const gogSection = `\n## Google (gog)\n\ngog is installed and pre-authenticated as ${email}. No setup needed — use gog commands directly.\n`;
+  const gogSection =
+    `\n## Google (gog)\n\n` +
+    `The \`gog\` CLI is installed and authenticated as **${email}**. ` +
+    `Use shell commands to access Google services — do NOT attempt direct API calls or look for separate OAuth/API keys.\n\n` +
+    `Examples:\n` +
+    `- \`gog calendar list\` — upcoming events\n` +
+    `- \`gog calendar list --from 2025-01-01 --to 2025-01-31\` — events in date range\n` +
+    `- \`gog gmail list\` — recent emails\n` +
+    `- \`gog gmail show <messageId>\` — read an email\n` +
+    `- \`gog drive list\` — list files\n` +
+    `- \`gog contacts list\` — list contacts\n` +
+    `- \`gog --help\` — all available commands\n`;
 
   try {
     await fs.mkdir(workspaceDir, { recursive: true });
@@ -284,10 +295,16 @@ export async function updateToolsWithGogAuth(email: string, log: GogLogger): Pro
       ? existing.replace(/\n## Google \(gog\)\n[\s\S]*?(?=\n## |\n---|\s*$)/, gogSection)
       : existing.trimEnd() + gogSection;
 
+    if (content === existing) {
+      return false;
+    }
+
     await fs.writeFile(toolsPath, content);
     log.info(`Updated TOOLS.md with gog auth for ${email}`);
+    return true;
   } catch (err) {
     log.warn(`Failed to update TOOLS.md: ${String(err)}`);
+    return false;
   }
 }
 
