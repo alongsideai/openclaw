@@ -318,6 +318,21 @@ export async function handleOpenAiHttpRequest(
       return;
     }
 
+    if (evt.stream === "tool") {
+      const data = evt.data ?? {};
+      const phase = typeof data.phase === "string" ? data.phase : "";
+      if (phase === "start" || phase === "result") {
+        writeSse(res, {
+          object: "tool.event",
+          name: typeof data.name === "string" ? data.name : "tool",
+          toolCallId: typeof data.toolCallId === "string" ? data.toolCallId : "",
+          phase,
+          ...(phase === "result" ? { isError: Boolean(data.isError) } : {}),
+        });
+      }
+      return;
+    }
+
     if (evt.stream === "lifecycle") {
       const phase = evt.data?.phase;
       if (phase === "end" || phase === "error") {
